@@ -1,4 +1,9 @@
 name: Update GitHub Traffic Image
+name: Update GitHub Traffic Stats
+
+permissions:
+  contents: write   # ⭐ 必须
+  actions: read
 
 on:
   schedule:
