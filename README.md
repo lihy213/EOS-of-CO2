@@ -48,3 +48,6 @@ If this script has brought you some convenience or help, please let me know.
 
 **ANY** suggestions are welcome.
 
+## 📊 Repository Traffic
+
+![GitHub Traffic](traffic_views.png)
