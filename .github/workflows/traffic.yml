@@ -31,6 +31,11 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python scripts/traffic.py
 
+      - name: Update traffic data
+        env:
+          GITHUB_TOKEN: ${{ secrets.TRAFFIC_PAT }}
+        run: python scripts/traffic.py
+
       - name: Commit and push image
         run: |
           git config user.name "github-actions"
