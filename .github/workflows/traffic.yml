@@ -1,14 +1,13 @@
-
 name: Update GitHub Traffic Stats
 
 permissions:
-  contents: write   # ⭐ 必须
+  contents: write
   actions: read
 
 on:
   schedule:
-    - cron: "0 0 * * *"   # 每天 UTC 00:00
-  workflow_dispatch:      # 允许手动运行
+    - cron: "0 0 * * *"
+  workflow_dispatch:
 
 jobs:
   update-traffic:
@@ -26,20 +25,15 @@ jobs:
       - name: Install dependencies
         run: pip install requests matplotlib
 
-      - name: Generate traffic image
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: python scripts/traffic.py
-
-      - name: Update traffic data
+      - name: Update traffic data (use PAT)
         env:
           GITHUB_TOKEN: ${{ secrets.TRAFFIC_PAT }}
         run: python scripts/traffic.py
 
-      - name: Commit and push image
+      - name: Commit and push results
         run: |
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
-          git add traffic_views.png
-          git commit -m "Auto update traffic stats" || exit 0
+          git add data figures
+          git commit -m "Update traffic statistics" || exit 0
           git push
