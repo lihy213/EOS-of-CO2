@@ -26,6 +26,22 @@ $$P = \frac{RT}{V} + \left(B_0 RT - A_0 - \frac{C_0}{T^2}\right) \frac{1}{V^2} +
 - Run in the IDE which supports the python environment.
 - Or, in the CMD, type `./BWR-PR-SRK.py`
 
+**MainWindow**
+
+![MainWindow](./README.assets/mainWindow.png)
+
+
+
+**3D Results**
+
+![3DResult](./README.assets/3DResult.png)
+
+
+
+**2D Results VS CoolProp**
+
+![2DResult](./README.assets/2DResult.png)
+
 ## TIPS
 
 If this script has brought you some convenience or help, please let me know.
