@@ -17,6 +17,8 @@ from PyQt5.QtGui import QClipboard, QPixmap, QImage, QColor
 from PyQt5.QtCore import Qt
 import CoolProp.CoolProp as CP
 import warnings
+from scipy.optimize import brentq
+from scipy.integrate import quad
 
 warnings.filterwarnings("ignore", category=RuntimeWarning)  # 忽略计算中可能出现的 Numpy 警告
 
@@ -80,94 +82,82 @@ class ThermoEngine:
         self.omega = 0.2239
 
         # --- BWR-like 方程系数 ---
-        self.R_MPA_CM3 = 8.314  # MPa * cm3 / (mol * K) (系数来自图片)
+        self.R_MPA_CM3 = 8.314  # MPa * cm3 / (mol * K)
         self.MW_G = 44.01
         self.MW_KG_M3_CONV = self.MW_G * 1000  # 44010
-        self.BWR_C4 = 1.33125e12
-        self.BWR_C5 = 4.48266e3
-        self.BWR_C3_FACTOR = 1.30765e7 * 6.478e4
-        self.BWR_TERM2_CONST = 4.32945e1
-        self.BWR_TERM2_TCONST = 2.52730e5
-        self.BWR_TERM2_T2CONST = 1.43215e10
-        self.BWR_TERM3_CONST = 4.18926e3
-        self.BWR_TERM3_TCONST = 1.30765e7
+        self.BWR_C4 = 1.33125e12                        # (cm3/kmol)^3K^2MPa
+        self.BWR_C5 = 4.48266e3                         # (cm3/kmol)^2
+        self.BWR_C3_FACTOR = 1.30765e7 * 6.478e4        # 1.30765e7(cm3/kmol)^3MPa  6.478e4(cm3/kmol)^3
+        self.BWR_TERM2_CONST = 4.32945e1                # cm3/kmol
+        self.BWR_TERM2_TCONST = 2.52730e5               # (cm3/kmol)^2MPa
+        self.BWR_TERM2_T2CONST = 1.43215e10             # (cm3/kmol)^2K^2MPa
+        self.BWR_TERM3_CONST = 4.18926e3                # (cm3/kmol)^2
+        self.BWR_TERM3_TCONST = 1.30765e7               # (cm3/kmol)^3MPa
         # 物理限制
-        self.X_MIN = self.MW_KG_M3_CONV / 1500  # 最小体积 (cm3/mol)它远高于 $\text{CO}_2$ 的已知物理最大密度，因此不会排除任何有效的液相根。
+        self.V_MIN = self.MW_KG_M3_CONV / 1500          # 最小体积 (cm3/mol)它远高于 $\text{CO}_2$ 的已知物理最大密度，因此不会排除任何有效的液相根。
 
-    def P_of_X_and_T(self, X, T):
-        """
-        [BWR-like Equation] 计算给定摩尔体积 X (cm3/mol) 和温度 T (K) 下的压力 P (MPa)。
-        """
-        # Term 1: Ideal Gas term
-        P1 = self.R_MPA_CM3 * T / X
+    # ---------------- BWR EOS ----------------
+    def P(self, V, T):
+        P1 = self.R_MPA_CM3 * T / V
+        C1 = (self.BWR_TERM2_CONST * self.R_MPA_CM3 * T
+              - self.BWR_TERM2_TCONST
+              - self.BWR_TERM2_T2CONST / T**2)
+        P2 = C1 / V**2
+        C2 = self.BWR_TERM3_CONST * self.R_MPA_CM3 * T - self.BWR_TERM3_TCONST
+        P3 = C2 / V**3
+        P4 = self.BWR_C3_FACTOR / V**6
+        E = np.exp(-self.BWR_C5 / V**2)
+        P5 = self.BWR_C4 / T**2 * (1/V**3 + self.BWR_C5/V**5) * E
+        return P1 + P2 + P3 + P4 + P5
 
-        # Term 2 Coefficient C1
-        C1 = (self.BWR_TERM2_CONST * self.R_MPA_CM3 * T - self.BWR_TERM2_TCONST) - (self.BWR_TERM2_T2CONST / (T ** 2))
-        P2 = C1 / (X ** 2)
+    def dP_dV(self, V, T):
+        h = V * 1e-6
+        return (self.P(V+h, T) - self.P(V-h, T)) / (2*h)
 
-        # Term 3 Coefficient C2
-        C2 = (self.BWR_TERM3_CONST * self.R_MPA_CM3 * T - self.BWR_TERM3_TCONST)
-        P3 = C2 / (X ** 3)
+    # ---------------- Root finder ----------------
+    def find_roots(self, P, T):
+        Vmax = self.R_MPA_CM3 * T / P * 20
+        grid = np.logspace(np.log10(self.V_MIN), np.log10(Vmax), 600)
+        roots = []
+        f0 = self.P(grid[0], T) - P
+        for i in range(1, len(grid)):
+            f1 = self.P(grid[i], T) - P
+            if f0 * f1 < 0:
+                try:
+                    roots.append(brentq(lambda V: self.P(V,T)-P,
+                                         grid[i-1], grid[i]))
+                except:
+                    pass
+            f0 = f1
+        return roots
 
-        # Term 4: 1/X^6 term
-        P4 = self.BWR_C3_FACTOR / (X ** 6)
+    # ---------------- Stability ----------------
+    def is_stable(self, V, T):
+        dPdV = self.dP_dV(V, T)
+        return dPdV < 0
 
-        # Term 5: Exponential term
-        E_term = np.exp(-self.BWR_C5 / (X ** 2))
-        P5_factor = self.BWR_C4 / (T ** 2)
-        P5_term = P5_factor * (1 / (X ** 3) + self.BWR_C5 / (X ** 5)) * E_term
+    # ---------------- Phase policy ----------------
+    def forbid_liquid(self, P, T):
+        return (P < self.Pc and T < self.Tc)
 
-        return P1 + P2 + P3 + P4 + P5_term
+    def select_root(self, roots, P, T):
+        stable = [V for V in roots if self.is_stable(V,T)]
+        if not stable:
+            return max(roots)
 
-    def dP_dX(self, X, T, dX=1e-6):
-        """数值导数 dP/dX"""
-        return (self.P_of_X_and_T(X + dX, T) - self.P_of_X_and_T(X - dX, T)) / (2 * dX)
+        if self.forbid_liquid(P, T):
+            return max(stable)   # 强制气相
+        else:
+            return min(stable)   # 高压/超临界允许液相
 
-    def solve_bwr_density(self, P_MPa, T_K, initial_guess_X):
-        """牛顿法求解 BWR 摩尔体积 X"""
-        P = P_MPa;
-        T = T_K
-        X_k = initial_guess_X
-        tolerance = 1e-8  # MPa
-        max_iter = 100
-        X_min = self.X_MIN
-
-        for k in range(max_iter):
-            if X_k <= X_min or T <= 0: return np.nan
-            P_calc = self.P_of_X_and_T(X_k, T)
-            f_X = P - P_calc
-            if abs(f_X) < tolerance: return self.MW_KG_M3_CONV / X_k
-
-            f_prime_X = -self.dP_dX(X_k, T)
-            if abs(f_prime_X) < 1e-15: return np.nan
-
-            X_next = X_k - f_X / f_prime_X
-
-            if X_next <= X_min:
-                X_next = (X_k + X_min * 1.01) / 2  # 步长减半
-                if X_next <= X_min: return np.nan
-
-            X_k = X_next
-        return np.nan
-
-    def calculate_bwr_density(self, P_Pa, T_K):
-        P_MPa = P_Pa / 1e6
-
-        # 1. 理想气体猜测 (cm3/mol)
-        X_ideal_guess = self.R_MPA_CM3 * T_K / P_MPa
-
-        # 2. 液相猜测 (从 1000 kg/m3 密度附近开始)
-        X_liquid_guess = (self.MW_KG_M3_CONV / 1000) * 0.9
-
-        # 求解
-        rho_gas = self.solve_bwr_density(P_MPa, T_K, X_ideal_guess)
-        rho_liquid = self.solve_bwr_density(P_MPa, T_K, X_liquid_guess)
-
-        valid_roots = [r for r in [rho_gas, rho_liquid] if r is not np.nan and r > 0]
-
-        if valid_roots:
-            return max(valid_roots)  # 选最高密度（稳定相）
-        return np.nan
+    # ---------------- Public API ----------------
+    def calculate_bwr_density(self, P_Pa, T):
+        P = P_Pa / 1e6
+        roots = self.find_roots(P, T)
+        if not roots:
+            return np.nan
+        V = self.select_root(roots, P, T)
+        return self.MW_KG_M3_CONV / V
 
     def calculate_density(self, P, T, method):
         if method == 'BWR':
@@ -175,9 +165,9 @@ class ThermoEngine:
 
         # --- SRK / PR 逻辑 (保持原样) ---
         if method == 'SRK':
-            m = 0.48 + 1.574 * self.omega - 0.176 * self.omega ** 2
+            m = 0.48508 + 1.55171 * self.omega - 0.15613 * self.omega ** 2
             b = 0.08664 * self.R * self.Tc / self.Pc
-            ac = 0.42748 * (self.R * self.Tc) ** 2 / self.Pc
+            ac = 0.42747 * (self.R * self.Tc) ** 2 / self.Pc
             u, w = 1, 0
         else:  # PR
             m = 0.37464 + 1.54226 * self.omega - 0.26992 * self.omega ** 2
@@ -198,7 +188,36 @@ class ThermoEngine:
         valid_roots = real_roots[real_roots > b]
 
         if len(valid_roots) == 0: return np.nan
-        final_V = min(valid_roots) if (P > 1e5 and T < 500) else max(valid_roots)
+
+        final_V = valid_roots[0]
+        # final_V = min(valid_roots) if (P > 1e5 and T < 500) else max(valid_roots)
+        # --- 多根处理 (逸度判定) ---
+        if len(valid_roots) > 1:
+            A = a_val * P / (self.R * T) ** 2
+            B = b * P / (self.R * T)
+            min_gibbs = float('inf')
+
+            for V in valid_roots:
+                Z = P * V / (self.R * T)
+                if Z <= B: continue
+
+                ln_phi = 0
+                # 计算逸度系数 ln(phi)
+                if method == 'SRK':
+                    # SRK Fugacity
+                    term1 = Z - 1 - np.log(Z - B)
+                    term2 = (A / B) * np.log(1 + B / Z)
+                    ln_phi = term1 - term2
+                elif method == 'PR':
+                    # PR Fugacity
+                    sqrt2 = np.sqrt(2)
+                    term1 = Z - 1 - np.log(Z - B)
+                    term2 = (A / (2 * sqrt2 * B)) * np.log((Z + (1 + sqrt2) * B) / (Z + (1 - sqrt2) * B))
+                    ln_phi = term1 - term2
+
+                if ln_phi < min_gibbs:
+                    min_gibbs = ln_phi
+                    final_V = V
         return self.MW / final_V
 
     def get_coolprop_density(self, P, T):
@@ -374,7 +393,7 @@ class MainWindow(QMainWindow):
         f_rng = QFormLayout();
         self.inp_p1 = QLineEdit("0.1");
         self.inp_p2 = QLineEdit("300.0")  # Increased range for BWR
-        self.inp_t1 = QLineEdit("300.0");
+        self.inp_t1 = QLineEdit("220.0");
         self.inp_t2 = QLineEdit("800.0");
         self.inp_res = QLineEdit("50")
         f_rng.addRow("P Min/Max:", self.h_layout([self.inp_p1, self.inp_p2]));
@@ -883,7 +902,7 @@ class MainWindow(QMainWindow):
                     rho = self.engine.calculate_density(P_pa[i, j], T[i, j], eos)
                     row[f"Density_{eos} (kg/m3)"] = rho
                     if show_err:
-                        err = abs(rho - rho_cp) / rho_cp * 100
+                        err = (rho - rho_cp) / rho_cp * 100
                         row[f"RelError_{eos} (%)"] = err
 
                 data.append(row)
@@ -932,7 +951,7 @@ class MainWindow(QMainWindow):
                 y_cp.append(rho_cp)
 
             if self.chk_cp.isChecked() and self.chk_err.isChecked():
-                err = abs(rho - rho_cp) / rho_cp * 100
+                err = (rho - rho_cp) / rho_cp * 100
                 y_err.append(err)
 
             if self.chk_csv.isChecked():
@@ -1040,7 +1059,7 @@ class MainWindow(QMainWindow):
                 data[f"Density_{eos} (kg/m3)"].append(rho)
 
                 if show_err:
-                    err = abs(rho - rho_cp) / rho_cp * 100
+                    err = (rho - rho_cp) / rho_cp * 100
                     data[f"RelError_{eos} (%)"].append(err)
 
         # ====================== 绘图 ======================
