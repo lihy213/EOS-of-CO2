@@ -46,8 +46,12 @@ $$P = \frac{RT}{V} + \left(B_0 RT - A_0 - \frac{C_0}{T^2}\right) \frac{1}{V^2} +
 
 If this script has brought you some convenience or help, please let me know.
 
-**ANY** suggestions are welcome.
+There are unevitablely some mistakes or something needed to be improved, **ANY** suggestions are welcome.
 
 ## 📊 Repository Traffic
 
 ![GitHub Traffic](traffic_views.png)
+
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=lihy213/EOS-of-CO2&type=date&legend=top-left)](https://www.star-history.com/#lihy213/EOS-of-CO2&type=date&legend=top-left)
